@@ -1,0 +1,370 @@
+import { useState, useCallback } from 'react';
+import { useConversation } from '@elevenlabs/react';
+import styles from '../styles/agent.module.css';
+
+// Function to parse text and create hyperlinks
+const parseMessageWithLinks = (text) => {
+  // Regular expressions for URLs and emails
+  const urlWithProtocolRegex = /(https?:\/\/[^\s]+)/g;
+  const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g;
+  const urlWithoutProtocolRegex = /\b([a-zA-Z0-9][-a-zA-Z0-9]*\.(gov|com|org|net|edu|mil|us|ca|uk|info|io|co|ai|app|dev|tech|online|site|website|blog|shop|store|biz|me)(?:\/[^\s]*)?)\b/gi;
+  
+  let parts = [text];
+  
+  // Replace URLs with protocol (http/https)
+  parts = parts.flatMap(part => {
+    if (typeof part !== 'string') return part;
+    const split = part.split(urlWithProtocolRegex);
+    return split.map((segment, i) => 
+      urlWithProtocolRegex.test(segment) 
+        ? <a key={`url-proto-${i}`} href={segment} target="_blank" rel="noopener noreferrer" className={styles.link}>{segment}</a>
+        : segment
+    );
+  });
+  
+  // Replace emails (do this before plain URLs to avoid conflicts)
+  parts = parts.flatMap(part => {
+    if (typeof part !== 'string') return part;
+    const split = part.split(emailRegex);
+    return split.map((segment, i) => 
+      emailRegex.test(segment)
+        ? <a key={`email-${i}`} href={`mailto:${segment}`} className={styles.link}>{segment}</a>
+        : segment
+    );
+  });
+  
+  // Replace URLs without protocol (e.g., example.com, midlandtexas.gov/parks)
+  parts = parts.flatMap((part, partIdx) => {
+    if (typeof part !== 'string') return part;
+    
+    const matches = [];
+    let match;
+    const regex = new RegExp(urlWithoutProtocolRegex);
+    
+    while ((match = regex.exec(part)) !== null) {
+      matches.push({
+        text: match[0],
+        index: match.index
+      });
+    }
+    
+    if (matches.length === 0) return part;
+    
+    const result = [];
+    let lastIndex = 0;
+    
+    matches.forEach((m, i) => {
+      // Add text before the match
+      if (m.index > lastIndex) {
+        result.push(part.substring(lastIndex, m.index));
+      }
+      
+      // Add the link
+      result.push(
+        <a key={`url-${partIdx}-${i}`} href={`https://${m.text}`} target="_blank" rel="noopener noreferrer" className={styles.link}>
+          {m.text}
+        </a>
+      );
+      
+      lastIndex = m.index + m.text.length;
+    });
+    
+    // Add remaining text
+    if (lastIndex < part.length) {
+      result.push(part.substring(lastIndex));
+    }
+    
+    return result;
+  });
+  
+  return parts;
+};
+
+const AGENT_ID = 'agent_8601k89mc91repq8xd2zg2brmkkq';
+
+export default function AgentPage() {
+  const [messages, setMessages] = useState([]);
+  const [isConnected, setIsConnected] = useState(false);
+  const [textInput, setTextInput] = useState('');
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const conversation = useConversation({
+    onConnect: () => {
+      console.log('Connected to ElevenLabs agent');
+      setIsConnected(true);
+      addMessage('system', 'Connected! You can now speak or type your message.');
+    },
+    onDisconnect: () => {
+      console.log('Disconnected from agent');
+      addMessage('system', 'Disconnected from agent');
+      setIsConnected(false);
+    },
+    onMessage: (message) => {
+      console.log('Message received:', message);
+      if (message.message) {
+        // Check if it's a user message (speech transcription) or agent response
+        // User messages typically have source='user' or role='user'
+        const isUserMessage = message.source === 'user' || message.role === 'user';
+        addMessage(isUserMessage ? 'user' : 'agent', message.message);
+      }
+      // Log the full message to debug
+      console.log('Full message object:', JSON.stringify(message));
+    },
+    onError: (error) => {
+      console.error('Error:', error);
+      addMessage('error', `Error: ${error.message}`);
+    },
+    onModeChange: (mode) => {
+      console.log('Mode changed:', mode);
+    },
+    onStatusChange: (status) => {
+      console.log('Status changed:', status);
+    },
+  });
+
+  const addMessage = useCallback((type, content) => {
+    setMessages(prev => [...prev, { type, content, timestamp: Date.now() }]);
+  }, []);
+
+  const handleConnect = async () => {
+    if (isConnected) return;
+    
+    try {
+      addMessage('system', 'Connecting to Jacky...');
+      const conversationId = await conversation.startSession({
+        agentId: AGENT_ID,
+        connectionType: 'webrtc', // Use WebRTC for stable connection
+      });
+      console.log('Connected with conversation ID:', conversationId);
+    } catch (error) {
+      console.error('Failed to start conversation:', error);
+      addMessage('error', `Failed to connect: ${error.message}`);
+    }
+  };
+
+  const handleDisconnect = () => {
+    conversation.endSession();
+    addMessage('system', 'Conversation ended');
+  };
+
+  const handleSendText = async (e) => {
+    e.preventDefault();
+    if (!textInput.trim()) return;
+
+    const messageToSend = textInput.trim();
+    setTextInput('');
+    
+    // Auto-connect if not connected
+    if (!isConnected) {
+      try {
+        addMessage('system', 'Connecting to Jacky...');
+        const conversationId = await conversation.startSession({
+          agentId: AGENT_ID,
+          connectionType: 'webrtc',
+        });
+        console.log('Connected with conversation ID:', conversationId);
+        
+        // Wait a moment for connection to establish
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        // Send the message
+        addMessage('user', messageToSend);
+        console.log('Sending message:', messageToSend);
+        conversation.sendUserMessage(messageToSend);
+      } catch (error) {
+        console.error('Failed to connect:', error);
+        addMessage('error', `Failed to connect: ${error.message}`);
+        return;
+      }
+    } else {
+      // Already connected, just send
+      addMessage('user', messageToSend);
+      
+      try {
+        console.log('Sending message to agent:', messageToSend);
+        conversation.sendUserMessage(messageToSend);
+        console.log('Message sent successfully');
+      } catch (error) {
+        console.error('Failed to send text message:', error);
+        addMessage('error', `Failed to send message: ${error.message}`);
+      }
+    }
+  };
+
+  // Keep the connection alive
+  const handleUserActivity = useCallback(() => {
+    if (isConnected && conversation.sendUserActivity) {
+      conversation.sendUserActivity();
+    }
+  }, [isConnected, conversation]);
+
+  const handleToggleMute = () => {
+    if (conversation.isMuted) {
+      conversation.unmute();
+      addMessage('system', 'Microphone unmuted');
+    } else {
+      conversation.mute();
+      addMessage('system', 'Microphone muted');
+    }
+  };
+
+  return (
+    <div className={styles.pageContainer}>
+      {/* Collapsed Widget Button */}
+      {!isExpanded && (
+        <button 
+          className={styles.widgetButton}
+          onClick={() => setIsExpanded(true)}
+          aria-label="Open Jacky 2.0 Chat"
+        >
+          <div className={styles.widgetAvatar}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="12" cy="12" r="10" fill="#00599c"/>
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z" fill="#ffffff"/>
+            </svg>
+          </div>
+          <div className={styles.widgetText}>
+            <span className={styles.widgetGreeting}>Hi, I'm Jacky 2.0 - Test 👋!</span>
+            <div className={styles.widgetCta}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M20.487 17.14l-4.065-3.696a1.001 1.001 0 0 0-1.391.043l-2.393 2.461c-.576-.11-1.734-.471-2.926-1.66-1.192-1.193-1.553-2.354-1.66-2.926l2.459-2.394a1 1 0 0 0 .043-1.391L6.859 3.513a1 1 0 0 0-1.391-.087l-2.17 1.861a1 1 0 0 0-.29.649c-.015.25-.301 6.172 4.291 10.766C11.305 20.707 16.323 21 17.705 21c.202 0 .326-.006.359-.008a.992.992 0 0 0 .648-.291l1.86-2.171a.997.997 0 0 0-.085-1.39z"/>
+              </svg>
+              <span>How can I help you?</span>
+            </div>
+          </div>
+        </button>
+      )}
+
+      {/* Expanded Widget Window */}
+      {isExpanded && (
+        <div className={styles.widgetWindow}>
+          <div className={styles.widgetHeader}>
+            <div className={styles.widgetHeaderContent}>
+              <div className={styles.widgetTitleSection}>
+                <h1>City of Midland, Texas</h1>
+                <p className={styles.widgetSubtitle}>Jacky 2.0 - Test</p>
+              </div>
+              <button 
+                className={styles.widgetCloseBtn}
+                onClick={() => setIsExpanded(false)}
+                aria-label="Close chat"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div className={styles.widgetContent}>
+            <div className={styles.messagesContainer}>
+              <div className={styles.messages}>
+                {messages.length === 0 ? (
+                  <div className={styles.welcomeState}>
+                    <h2>Welcome to Jacky 2.0 - Test</h2>
+                    <p>Type a message below or click the phone icon to start speaking</p>
+                  </div>
+              ) : (
+                messages.map((msg, idx) => (
+                  <div key={idx} className={`${styles.message} ${styles[msg.type]}`}>
+                    <span className={styles.messageType}>
+                      {msg.type === 'agent' ? 'Jacky 2.0' : 
+                       msg.type === 'user' ? 'User' :
+                       msg.type === 'error' ? 'Error' : 'System'}
+                    </span>
+                    <span className={styles.messageContent}>
+                      {parseMessageWithLinks(msg.content)}
+                    </span>
+                    <span className={styles.timestamp}>
+                      {new Date(msg.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className={styles.inputArea}>
+            <form onSubmit={handleSendText} className={styles.inputForm}>
+              <input
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder={isConnected ? "Type your message or speak..." : "Type a message to start..."}
+                className={styles.messageInput}
+                autoFocus
+              />
+              <button 
+                type="submit" 
+                className={styles.sendBtn}
+                disabled={!textInput.trim()}
+              >
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M2 10l18-8-8 18-2-8-8-2z"/>
+                </svg>
+              </button>
+              
+              {isConnected ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleToggleMute}
+                    className={`${styles.phoneBtn} ${conversation.isMuted ? styles.muted : ''}`}
+                    title="Toggle Microphone"
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M20.487 17.14l-4.065-3.696a1.001 1.001 0 0 0-1.391.043l-2.393 2.461c-.576-.11-1.734-.471-2.926-1.66-1.192-1.193-1.553-2.354-1.66-2.926l2.459-2.394a1 1 0 0 0 .043-1.391L6.859 3.513a1 1 0 0 0-1.391-.087l-2.17 1.861a1 1 0 0 0-.29.649c-.015.25-.301 6.172 4.291 10.766C11.305 20.707 16.323 21 17.705 21c.202 0 .326-.006.359-.008a.992.992 0 0 0 .648-.291l1.86-2.171a.997.997 0 0 0-.085-1.39z"/>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisconnect}
+                    className={styles.disconnectBtn}
+                    title="End Call"
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M16.707 2.293a1 1 0 0 0-1.414 0L12 5.586 8.707 2.293a1 1 0 0 0-1.414 1.414L10.586 7l-3.293 3.293a1 1 0 1 0 1.414 1.414L12 8.414l3.293 3.293a1 1 0 0 0 1.414-1.414L13.414 7l3.293-3.293a1 1 0 0 0 0-1.414z"/>
+                    </svg>
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleConnect}
+                  className={styles.connectBtn}
+                  title="Start Voice Call"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M20.487 17.14l-4.065-3.696a1.001 1.001 0 0 0-1.391.043l-2.393 2.461c-.576-.11-1.734-.471-2.926-1.66-1.192-1.193-1.553-2.354-1.66-2.926l2.459-2.394a1 1 0 0 0 .043-1.391L6.859 3.513a1 1 0 0 0-1.391-.087l-2.17 1.861a1 1 0 0 0-.29.649c-.015.25-.301 6.172 4.291 10.766C11.305 20.707 16.323 21 17.705 21c.202 0 .326-.006.359-.008a.992.992 0 0 0 .648-.291l1.86-2.171a.997.997 0 0 0-.085-1.39z"/>
+                  </svg>
+                </button>
+              )}
+            </form>
+          </div>
+
+          <div className={styles.widgetFooter}>
+            <div className={styles.widgetFooterContent}>
+              <div className={styles.statusSection}>
+                <span className={`${styles.statusIndicator} ${isConnected ? styles.online : styles.offline}`}></span>
+                <span className={styles.statusText}>{isConnected ? 'Connected' : 'Offline'}</span>
+              </div>
+              <div className={styles.poweredBy}>
+                Powered by City of Midland AI Team
+              </div>
+              <div className={styles.surveySection}>
+                <a 
+                  href="https://cityofmidlandtx.gov1.qualtrics.com/jfe/form/SV_0OPsa3AFYQafkSa" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className={styles.surveyLink}
+                >
+                  Share Feedback
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
