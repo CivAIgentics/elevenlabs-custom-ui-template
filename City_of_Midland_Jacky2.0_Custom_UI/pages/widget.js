@@ -89,10 +89,16 @@ export default function WidgetPage() {
       setIsConnected(true);
       // Don't show connection message in chat
     },
-    onDisconnect: () => {
+    onDisconnect: (disconnectEvent) => {
       console.log('❌ Disconnected from agent');
+      console.log('Disconnect event details:', disconnectEvent);
       setIsConnected(false);
-      // Don't show disconnection message in chat
+      
+      // Handle abnormal disconnects (code 1006)
+      if (disconnectEvent?.code === 1006) {
+        console.error('Abnormal disconnect (1006) - possible causes: API key issue, network problem, or agent configuration');
+        addMessage('error', 'Connection failed. Please check your internet connection and try again.');
+      }
     },
     onMessage: (message) => {
       console.log('📨 Message received:', message);
@@ -147,9 +153,18 @@ export default function WidgetPage() {
       stream.getTracks().forEach(track => track.stop());
       
       addMessage('system', 'Connecting to Jacky...');
+      
+      // Get signed URL from our API endpoint
+      console.log('Fetching signed URL...');
+      const signedUrlResponse = await fetch('/api/get-signed-url');
+      if (!signedUrlResponse.ok) {
+        throw new Error('Failed to get signed URL from server');
+      }
+      const { signedUrl } = await signedUrlResponse.json();
+      console.log('Got signed URL, starting session...');
+      
       const conversationId = await conversation.startSession({
-        agentId: AGENT_ID,
-        connectionType: 'webrtc',
+        signedUrl: signedUrl,
       });
       console.log('Connected with conversation ID:', conversationId);
     } catch (error) {
@@ -177,9 +192,16 @@ export default function WidgetPage() {
     if (!isConnected) {
       try {
         addMessage('system', 'Connecting to Jacky...');
+        
+        // Get signed URL from our API endpoint
+        const signedUrlResponse = await fetch('/api/get-signed-url');
+        if (!signedUrlResponse.ok) {
+          throw new Error('Failed to get signed URL from server');
+        }
+        const { signedUrl } = await signedUrlResponse.json();
+        
         const conversationId = await conversation.startSession({
-          agentId: AGENT_ID,
-          connectionType: 'webrtc',
+          signedUrl: signedUrl,
         });
         console.log('Connected with conversation ID:', conversationId);
         
